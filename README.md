@@ -16,6 +16,14 @@
 
 ### 2. 部署代理（智谱必需，别跳过）
 
+**两种做法，二选一：**
+
+- **Cloudflare Worker**（推荐）：全球可用，手机也能连。
+  跑 `CF_TOKEN='你的令牌' python3 deploy_worker.py` 一键部署，不用开网页。
+- **本地代理**：不注册任何东西，`python3 local_proxy.py`，
+  填 `http://localhost:8787`。但电脑得开着，手机访问不了。
+
+
 **为什么必须**：智谱的接口不允许浏览器直连。带 `Authorization` 的
 POST 会先发 OPTIONS 预检，而智谱的预检响应没放行这个头 → 浏览器直接拦掉。
 这是服务端策略，代码层面绕不过去。
