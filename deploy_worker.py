@@ -64,7 +64,18 @@ def main():
         fail('缺 CF_TOKEN 环境变量')
 
     if not os.path.exists(SRC):
-        fail('找不到 ' + SRC)
+        # 独立运行（比如 curl | python3）时本地没有仓库，去 GitHub 取
+        try:
+            import urllib.request
+            r = urllib.request.Request(
+                'https://raw.githubusercontent.com/Cool-zimo/fhapp-ai-chat/main/worker.js',
+                headers={'User-Agent': 'deploy'})
+            data = urllib.request.urlopen(r, timeout=60).read()
+            os.makedirs(os.path.dirname(SRC), exist_ok=True)
+            open(SRC, 'wb').write(data)
+            print('↓ 已从 GitHub 取到 worker.js')
+        except Exception as e:
+            fail('找不到 worker.js 也下载不到：' + str(e)[:120])
 
     # ── 1. 谁在调用（顺便验 token） ────────────────────────
     who = req('/user/tokens/verify')
