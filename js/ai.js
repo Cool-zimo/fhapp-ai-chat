@@ -273,9 +273,21 @@
                 });
                 steps.push('耗时: ' + (Date.now() - t0) + 'ms');
                 steps.push('回复: ' + String(out).slice(0, 60));
+                steps.push('');
+                // ★ 直连成功是个重要结论：那就根本不用折腾代理。
+                //   之前一直说"必须代理"是推测，这里给出实测判据。
+                if (!c.proxy) {
+                    steps.push('★ 直连成功 —— 不用配代理，直接用就行。');
+                } else {
+                    steps.push('✓ 经代理成功。');
+                }
                 return { ok: true, text: steps.join('\n') };
             } catch (e) {
                 steps.push('失败: ' + e.message);
+                if (!c.proxy) {
+                    steps.push('');
+                    steps.push('如果这条报的是跨域/发不出去，才需要代理。');
+                }
                 return {
                     ok: false,
                     code: e.code || 'unknown',
