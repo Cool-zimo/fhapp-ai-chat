@@ -20,18 +20,152 @@
         });
     }
     /** 极简 Markdown：只处理代码块和行内 code，其余原样 */
+    /**
+     * Markdown 渲染
+     *
+     * 支持：代码块 / 标题 / 列表 / 引用 / 表格 / 分隔线
+     * 行内：粗体 斜体 删除线 code 链接
+     *
+     * ★ 顺序极重要：先 esc，再做语法替换。
+     *   esc 之后字符串里已经没有真实标签了，此时生成的 <b>/<pre>
+     *   全是我们自己造的 —— 用户输入里的 <script> 早已变成
+     *   &lt;script&gt;，不可能被当标签执行。反过来先替换后转义就完蛋了。
+     *
+     * ★ 代码块先抽成占位符：否则块级/行内规则会把代码里面的
+     *   * _ # 当成 markdown 语法，把代码改坏。
+     */
     function md(s) {
+        if (s === null || s === undefined) return '';
+        var holds = [];   // 存抽出来的 HTML 片段（代码块 / 行内 code）
+
+        function inline(x) {
+            x = x.replace(/`([^`\n]+)`/g, function (m, c) {
+                holds.push('<code>' + c + '</code>');
+                return '\u0001H' + (holds.length - 1) + '\u0001';
+            });
+            x = x.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
+            x = x.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<i>$2</i>');
+            x = x.replace(/~~([^~\n]+)~~/g, '<s>$1</s>');
+            // 链接只放行 http/https —— javascript: 之类不能变成可点的
+            x = x.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, function (m, t, u) {
+                if (!/^https?:\/\//i.test(u)) return m;
+                return '<a href="' + u + '" target="_blank" rel="noopener">' + t + '</a>';
+            });
+            return x;
+        }
+
+        function blk(src) {
+            var ln = src.split('\n');
+            var out = '', list = null, buf = [];
+
+            function flushP() {
+                if (!buf.length) return;
+                out += '<p>' + inline(buf.join('<br>')) + '</p>';
+                buf = [];
+            }
+            function closeL() {
+                if (list) { out += '</' + list + '>'; list = null; }
+            }
+
+            for (var i = 0; i < ln.length; i++) {
+                var raw = ln[i];
+                // ★ rt = 原始行，只用于**判断**语法类型
+                //   t  = 转义后，用于**渲染**
+                //   两者必须分开：'>' 转义后是 '&gt;'，拿去匹配 /^>/
+                //   永远匹配不上，引用就会退化成普通段落。
+                var rt = raw.trim();
+                var t = esc(raw).trim();
+
+                if (!rt) { flushP(); closeL(); continue; }
+
+                // 整行就是占位符 → 块级元素，直接吐出去，别裹 <p>
+                var ph = /^\u0001H(\d+)\u0001$/.exec(rt);
+                if (ph) { flushP(); closeL(); out += '\u0001H' + ph[1] + '\u0001'; continue; }
+
+                var h = /^(#{1,6})\s+(.*)$/.exec(rt);
+                if (h) {
+                    flushP(); closeL();
+                    var lv = h[1].length;
+                    out += '<h' + lv + '>' + inline(esc(h[2])) + '</h' + lv + '>';
+                    continue;
+                }
+                if (/^(-{3,}|\*{3,}|_{3,})$/.test(rt)) {
+                    flushP(); closeL(); out += '<hr>'; continue;
+                }
+                if (/^>\s?/.test(rt)) {
+                    flushP(); closeL();
+                    out += '<blockquote>' +
+                        inline(esc(rt.replace(/^>\s?/, ''))) + '</blockquote>';
+                    continue;
+                }
+                var ul = /^[-*+]\s+(.*)$/.exec(rt);
+                if (ul) {
+                    flushP();
+                    if (list !== 'ul') { closeL(); out += '<ul>'; list = 'ul'; }
+                    out += '<li>' + inline(esc(ul[1])) + '</li>';
+                    continue;
+                }
+                var ol = /^\d+[.)]\s+(.*)$/.exec(rt);
+                if (ol) {
+                    flushP();
+                    if (list !== 'ol') { closeL(); out += '<ol>'; list = 'ol'; }
+                    out += '<li>' + inline(esc(ol[1])) + '</li>';
+                    continue;
+                }
+                // 表格
+                if (/^\|/.test(rt)) {
+                    flushP(); closeL();
+                    var rows = [];
+                    while (i < ln.length && /^\s*\|/.test(ln[i])) {
+                        rows.push(ln[i].trim().replace(/^\||\|$/g, '').split('|'));
+                        i++;
+                    }
+                    i--;
+                    // 去掉 |---|---| 那条分隔行
+                    if (rows.length > 1 && /^[-: |]+$/.test(rows[1].join(''))) rows.splice(1, 1);
+                    var tb = '<table>';
+                    for (var r = 0; r < rows.length; r++) {
+                        tb += '<tr>';
+                        for (var c = 0; c < rows[r].length; c++) {
+                            var v = esc(rows[r][c].trim());
+                            tb += (r === 0 ? '<th>' : '<td>') + inline(v) +
+                                  (r === 0 ? '</th>' : '</td>');
+                        }
+                        tb += '</tr>';
+                    }
+                    out += tb + '</table>';
+                    continue;
+                }
+                buf.push(t);   // 普通段落行，攒着
+            }
+            flushP(); closeL();
+            return out;
+        }
+
+        // ── 主流程：先抽代码块 ─────────────────────────────
         var parts = String(s).split('```');
-        var out = '';
+        var body = '';
         for (var i = 0; i < parts.length; i++) {
             if (i % 2 === 1) {
+                // 去掉语言标记（```python）
                 var code = parts[i].replace(/^[a-zA-Z0-9]*\n/, '');
-                out += '<pre><code>' + esc(code) + '</code></pre>';
+                // 含换行 = 块级 <pre>；不含 = 行内 <code>
+                var isBlock = code.indexOf('\n') >= 0;
+                holds.push(isBlock
+                    ? '<pre><code>' + esc(code) + '</code></pre>'
+                    : '<code>' + esc(code) + '</code>');
+                body += '\u0001H' + (holds.length - 1) + '\u0001';
             } else {
-                out += esc(parts[i]).replace(/`([^`\n]+)`/g, '<code>$1</code>');
+                body += parts[i];
             }
         }
-        return out;
+
+        var html = blk(body);
+        // 还原占位符
+        html = html.replace(/\u0001H(\d+)\u0001/g, function (m, n) {
+            return holds[Number(n)] || '';
+        });
+        return html;
     }
     function bottom() {
         var m = $('msgs');
@@ -82,27 +216,30 @@
         } catch (e) { msgs = []; }
     }
 
-    // ── 提示条 ─────────────────────────────────────────────
+    /**
+     * ── 提示条 ──────────────────────────────────────────
+     *
+     * ★ 实测更正：智谱 open.bigmodel.cn **允许浏览器直连**。
+     *
+     *   之前这里写着"必须填代理，否则发不出去" —— 那个结论是错的。
+     *   它是拿被中间网关污染的 403 当证据推出来的（网关拦截和厂商
+     *   拒绝长得一模一样，当时没分辨出来）。
+     *
+     *   真实环境跑通后证明：不填代理直接就能聊。
+     *   所以这里不再吓唬人，代理降级为"连不上时的可选方案"。
+     */
     function banner() {
         var c = global.AI.cfg();
         var b = $('banner');
-        var hasKey = !!c.key;
-        var needProxy = !c.proxy && c.provider === 'zhipu';
 
-        if (!hasKey) {
+        if (!c.key) {
             b.className = 'banner on';
             $('banner-text').textContent = '还没填 API Key，填了才能聊。';
             $('banner-act').textContent = '去设置';
             $('banner-act').onclick = function () { openSet(); };
-        } else if (needProxy) {
-            b.className = 'banner on warn';
-            $('banner-text').textContent =
-                '智谱的端点不允许浏览器直连，必须填代理地址，否则发不出去。';
-            $('banner-act').textContent = '怎么办';
-            $('banner-act').onclick = function () { openSet(); };
-        } else {
-            b.className = 'banner';
+            return;
         }
+        b.className = 'banner';
     }
 
     function chip() {
@@ -270,8 +407,9 @@
 
             // 代理 —— 智谱必需
             var xf = fld('代理地址',
-                '智谱 / DeepSeek 等不允许浏览器直连，<b>必须填</b>。' +
-                '部署 worker.js 到 Cloudflare 后拿到 https://xxx.workers.dev。<br>' +
+                '一般<b>不用填</b> —— 智谱实测可以直连。' +
+                '只有确认直连被拦时才需要：部署 worker.js 到 Cloudflare，' +
+                '拿到 https://xxx.workers.dev 填这儿。<br>' +
                 '⚠️ 别用网上公开的 CORS 代理 —— 你的 Key 会从人家服务器过一遍。');
             var xi = doc.createElement('input');
             xi.value = c.proxy;
@@ -409,8 +547,8 @@
         renderAll();
         if (!msgs.length) {
             row('assistant', '你好，我是 AI 聊天小程序。<br>' +
-                '先点右上角 ⚙ 填 API Key；智谱的话还得填代理地址，' +
-                '点"测试连接"能直接看是哪一步卡住。');
+                '点右上角 ⚙ 填 API Key 就能聊（智谱可以直连，不用配代理）。<br>' +
+                '不确定就点设置里的"测试连接"，它会告诉你是哪一步卡住。');
         }
         $('inp').focus();
     }
