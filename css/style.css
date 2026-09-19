@@ -213,3 +213,38 @@ body{
 
 /* 长链接换行，别把气泡撑破 */
 .bub a{word-break:break-all}
+
+/* ═══ LaTeX 数学公式 ═══════════════════════════════════════ */
+.bub .math{
+    font-family:"Latin Modern Math",Cambria,"Times New Roman",serif;
+    line-height:1.5}
+.bub .math-inline{display:inline}
+.bub .math-block{
+    display:block;margin:8px 0;padding:7px 10px;
+    background:rgba(0,0,0,.03);border-radius:5px;
+    text-align:center;font-size:15px;overflow-x:auto}
+
+/* 分数 */
+.mfrac{display:inline-flex;flex-direction:column;
+    vertical-align:middle;text-align:center;margin:0 2px;font-size:.92em}
+.mnum{padding:0 4px;border-bottom:1px solid currentColor;line-height:1.25}
+.mden{padding:0 4px;line-height:1.25}
+
+/* 根号 */
+.msqrt{display:inline-flex;align-items:stretch;margin:0 1px}
+.mrad{position:relative;line-height:1}
+/* 根号的上横线：盖住被开方数 */
+.mbody{border-top:1px solid currentColor;padding:0 2px;margin-top:.32em}
+
+/* 上划线 / 帽子 */
+.mover{border-top:1px solid currentColor;padding-top:1px}
+.mhat{position:relative;padding-top:.3em}
+.mhat::before{content:'^';position:absolute;top:-.15em;left:50%;
+    transform:translateX(-50%);font-size:.75em}
+
+.bub sup,.bub sub{font-size:.72em;line-height:1}
+.bub sup{vertical-align:super}
+.bub sub{vertical-align:sub}
+
+/* 兜底：不支持的命令原样显示，用等宽标出来，别混进正文 */
+.bub .math{font-style:normal}
