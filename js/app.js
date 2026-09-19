@@ -260,11 +260,141 @@
      *   & < > 变成实体后再匹配就全乱了。
      *   这里拿到的必须是原始源码。
      */
+    /**
+     * 行内裸公式：把 base^sup / base_sub 这种最小单元渲染成公式
+     *
+     * 输入**未转义**的原始行；输出里公式已成占位符，其余文字未转义
+     * （后面 inline() 会统一 esc）。
+     *
+     * ★ 只吃"最小单元"：向左吃到 base 边界，向右吃完上标就停。
+     *   绝不继续往右吃 —— 否则会把后面的整句中文都吞进公式里。
+     */
+    function _inlineMath(t, holds) {
+        t = String(t == null ? '' : t);
+        if (!/[\^_]/.test(t)) {
+            // 没有上下标，但可能有明确的 LaTeX 命令（\frac 之类）
+            if (/\\[a-zA-Z]{2,}/.test(t) && !/https?:\/\//i.test(t)) {
+                if (_looksMath(t)) {
+                    holds.push('<span class="math math-inline">' + tex(t.trim()) + '</span>');
+                    return '\u0001H' + (holds.length - 1) + '\u0001';
+                }
+            }
+            // ★ 也必须 esc —— 这条分支覆盖绝大多数普通文本
+            return esc(t);
+        }
+        // URL 里可能有 _ 或 %5E，整行放过
+        if (/https?:\/\//i.test(t)) return esc(t);
+        // 文件名 my_file_name.js 里的 _ 不是下标
+        if (/^[\w./-]+\.[a-zA-Z0-9]{1,6}$/.test(t.trim())) return esc(t);
+
+        var out = '';
+        var i = 0;
+        while (i < t.length) {
+            var c = t[i];
+
+            if ((c === '^' || c === '_') && i > 0) {
+                // 向左扩展 base（数字/字母/右括号）
+                var L = i;
+                while (L > 0 && /[0-9A-Za-z)\]}]/.test(t[L - 1])) L--;
+                if (L === i) { out += esc(t[i]); i++; continue; }  // 左边没东西，不是公式
+
+                // 向右扩展 sup
+                var R = i + 1;
+                if (t[R] === '{') {
+                    var e = _matchBrace(t, R);
+                    if (e >= 0) R = e + 1;
+                    else R = i + 1;
+                } else {
+                    while (R < t.length && /[0-9A-Za-z]/.test(t[R])) R++;
+                }
+                if (R === i + 1) { out += esc(t[i]); i++; continue; } // 右边没东西
+
+                var piece = t.slice(L, R);
+                holds.push('<span class="math math-inline">' + tex(piece) + '</span>');
+                out += '\u0001H' + (holds.length - 1) + '\u0001';
+                i = R;
+                continue;
+            }
+
+            // ★ 必须在这里 esc：buf 里其它行是 esc 过的，
+            //   而 flushP 不会再 esc（否则我们自己造的 <span> 会被转义）。
+            //   不 esc 就等于把原文直接吐进 innerHTML —— 这是 XSS。
+            out += esc(t[i]);
+            i++;
+        }
+        return out;
+    }
+
+    /**
+     * 段落行像不像数学？
+     *
+     * ★ 为什么需要这个：绝大多数模型输出公式时**不打分隔符**，
+     *   直接写 `a^2 - 2ab + b^2`。只认 $...$ 就全都漏掉，
+     *   用户看到的就是一堆源码 —— 这正是上一版失败的原因。
+     *
+     * ★ 但要保守，否则误伤严重：
+     *   - 必须含 LaTeX 特征（\frac ^ _ 等）
+     *   - 不能是普通 URL / 文件路径
+     *   - 中文占比太高就当自然语言放过（中文句子里偶尔有个 ^ 不算公式）
+     */
+    function _looksMath(ln) {
+        var t = ln.trim();
+        if (!t) return false;
+        if (t.length > 400) return false;            // 太长的整段，八成是正文
+
+        // 明确的 LaTeX 命令 → 一定是公式
+        if (/\\[a-zA-Z]{2,}/.test(t)) return true;
+
+        // 含上下标
+        if (/[\^_]/.test(t)) {
+            // 排除 URL / 路径（里面可能有 _ 或 %5E）
+            if (/https?:\/\//i.test(t)) return false;
+            if (/^[\w./-]+\.(js|py|json|md|css|html)$/i.test(t.trim())) return false;
+            // 中文占比过高 → 当自然语言
+            var han = (t.match(/[\u4e00-\u9fa5]/g) || []).length;
+            if (han / t.length > 0.5) return false;
+            return true;
+        }
+        return false;
+    }
+
     function extractMath(text, holds) {
         var out = '';
         var i = 0;
 
         while (i < text.length) {
+            // \(...\)  行内（LaTeX 标准分隔符，很多模型爱用）
+            if (text[i] === '\\' && text[i + 1] === '(') {
+                var pe = text.indexOf('\\)', i + 2);
+                if (pe > i + 1) {
+                    var pb = text.slice(i + 2, pe);
+                    if (pb.trim()) {
+                        holds.push('<span class="math math-inline">' +
+                            tex(pb) + '</span>');
+                        out += '\u0001H' + (holds.length - 1) + '\u0001';
+                        i = pe + 2;
+                        continue;
+                    }
+                }
+                out += text[i]; i++; continue;
+            }
+
+            // \[...\]  块级
+            if (text[i] === '\\' && text[i + 1] === '[') {
+                var be = text.indexOf('\\]', i + 2);
+                if (be > i + 1) {
+                    var bb = text.slice(i + 2, be);
+                    if (bb.trim()) {
+                        holds.push('<span class="math math-block">' +
+                            tex(bb) + '</span>');
+                        out += '\u0001H' + (holds.length - 1) + '\u0001';
+                        i = be + 2;
+                        continue;
+                    }
+                }
+                out += text[i]; i++; continue;
+            }
+
             // $$ ... $$  块级
             if (text[i] === '$' && text[i + 1] === '$') {
                 var e2 = text.indexOf('$$', i + 2);
@@ -476,7 +606,12 @@
                     out += tb + '</table>';
                     continue;
                 }
-                buf.push(t);   // 普通段落行，攒着
+                // ★ 裸公式：模型经常不打分隔符，直接写 a^2 + b^2。
+                //   ★ 必须"最小单元"渲染，不能整行 ——
+                //     整行渲染会被中文占比卡住（"假设 a=5，那么 (5-2)^2 = 9"
+                //     中文过半就会被判成正文而漏掉）。
+                //     只渲染 base^sup 这一小段，其余文字原样走普通段落。
+                buf.push(_inlineMath(raw, holds));
             }
             flushP(); closeL();
             return out;
