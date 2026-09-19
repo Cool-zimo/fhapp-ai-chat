@@ -19,38 +19,65 @@
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
         });
     }
-    /** 极简 Markdown：只处理代码块和行内 code，其余原样 */
     /**
      * Markdown 渲染
      *
-     * 支持：代码块 / 标题 / 列表 / 引用 / 表格 / 分隔线
-     * 行内：粗体 斜体 删除线 code 链接
+     * 块级：代码块 / 标题 / 列表 / 任务列表 / 引用 / 表格 / 分隔线 / 图片
+     * 行内：粗体 斜体 删除线 高亮 code 链接 裸URL
      *
      * ★ 顺序极重要：先 esc，再做语法替换。
      *   esc 之后字符串里已经没有真实标签了，此时生成的 <b>/<pre>
      *   全是我们自己造的 —— 用户输入里的 <script> 早已变成
      *   &lt;script&gt;，不可能被当标签执行。反过来先替换后转义就完蛋了。
      *
-     * ★ 代码块先抽成占位符：否则块级/行内规则会把代码里面的
-     *   * _ # 当成 markdown 语法，把代码改坏。
+     * ★ 占位符机制：code / 图片 / 链接 都先抽成 \u0001Hn\u0001 存进 holds。
+     *   两个原因 ——
+     *     a) 代码块里的 * _ # 不该被当 markdown（否则 a*b*c 变成斜体）
+     *     b) 链接里的 URL 不该被"裸URL自动链接"再包一层 <a>，
+     *        否则 <a href="http.."> 里面又套一个 <a>，结构直接烂掉
+     *   所以顺序必须是：code → 图片 → 链接 → 裸URL → 强调。
      */
     function md(s) {
         if (s === null || s === undefined) return '';
         var holds = [];   // 存抽出来的 HTML 片段（代码块 / 行内 code）
 
         function inline(x) {
+            // ① 行内 code（最优先，内容原样，不接受任何后续规则）
             x = x.replace(/`([^`\n]+)`/g, function (m, c) {
                 holds.push('<code>' + c + '</code>');
                 return '\u0001H' + (holds.length - 1) + '\u0001';
             });
+
+            // ② 图片 ![alt](url)
+            x = x.replace(/!\[([^\]\n]*)\]\(([^)\s]+)\)/g, function (m, alt, u) {
+                if (!/^https?:\/\//i.test(u)) return m;
+                holds.push('<img class="msg-img" src="' + esc(u) + '"' +
+                    ' alt="' + esc(alt) + '" loading="lazy">');
+                return '\u0001H' + (holds.length - 1) + '\u0001';
+            });
+
+            // ③ [文字](url) —— 也必须占位，否则第④步会把 href 里的
+            //    URL 又识别成裸链接，套出 <a><a> 这种烂结构
+            x = x.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, function (m, t, u) {
+                if (!/^https?:\/\//i.test(u)) return m;
+                holds.push('<a href="' + esc(u) + '"' +
+                    ' target="_blank" rel="noopener">' + t + '</a>');
+                return '\u0001H' + (holds.length - 1) + '\u0001';
+            });
+
+            // ④ 裸 URL 自动成链接
+            x = x.replace(/(^|[\s(])(https?:\/\/[^\s<)"'\]]+)/g,
+                function (m, pre, u) {
+                    holds.push('<a href="' + u + '"' +
+                        ' target="_blank" rel="noopener">' + u + '</a>');
+                    return pre + '\u0001H' + (holds.length - 1) + '\u0001';
+                });
+
+            // ⑤ 强调类
             x = x.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
             x = x.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<i>$2</i>');
             x = x.replace(/~~([^~\n]+)~~/g, '<s>$1</s>');
-            // 链接只放行 http/https —— javascript: 之类不能变成可点的
-            x = x.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, function (m, t, u) {
-                if (!/^https?:\/\//i.test(u)) return m;
-                return '<a href="' + u + '" target="_blank" rel="noopener">' + t + '</a>';
-            });
+            x = x.replace(/==([^=\n]+)==/g, '<mark>$1</mark>');
             return x;
         }
 
@@ -64,7 +91,7 @@
                 buf = [];
             }
             function closeL() {
-                if (list) { out += '</' + list + '>'; list = null; }
+                if (list) { out += '</' + (list === 'ulTask' ? 'ul' : list) + '>'; list = null; }
             }
 
             for (var i = 0; i < ln.length; i++) {
@@ -82,6 +109,14 @@
                 var ph = /^\u0001H(\d+)\u0001$/.exec(rt);
                 if (ph) { flushP(); closeL(); out += '\u0001H' + ph[1] + '\u0001'; continue; }
 
+                // ★ 整行就一张图 → 块级吐出，别裹进 <p>
+                //   占位符是在 inline() 里才生成的，而整行判定在这之前，
+                //   所以这里得直接认 markdown 原文，不能靠占位符判断。
+                if (/^!\[[^\]\n]*\]\(https?:\/\/[^)\s]+\)$/i.test(rt)) {
+                    flushP(); closeL();
+                    out += inline(esc(rt));
+                    continue;
+                }
                 var h = /^(#{1,6})\s+(.*)$/.exec(rt);
                 if (h) {
                     flushP(); closeL();
@@ -96,6 +131,23 @@
                     flushP(); closeL();
                     out += '<blockquote>' +
                         inline(esc(rt.replace(/^>\s?/, ''))) + '</blockquote>';
+                    continue;
+                }
+                // ★ 任务列表必须排在普通 ul 之前：
+                //   '- [ ] x' 同样满足 /^[-*+]\s+/，放后面就永远轮不到
+                var tk = /^[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(rt);
+                if (tk) {
+                    flushP();
+                    if (list !== 'ulTask') {
+                        closeL();
+                        out += '<ul class="task">';
+                        list = 'ulTask';
+                    }
+                    var done = tk[1].toLowerCase() === 'x';
+                    // disabled：只是展示 AI 给的结果，不是让你真去勾选
+                    out += '<li class="task-item' + (done ? ' done' : '') + '">' +
+                        '<input type="checkbox" disabled' + (done ? ' checked' : '') + '>' +
+                        inline(esc(tk[2])) + '</li>';
                     continue;
                 }
                 var ul = /^[-*+]\s+(.*)$/.exec(rt);
@@ -147,13 +199,24 @@
         var body = '';
         for (var i = 0; i < parts.length; i++) {
             if (i % 2 === 1) {
-                // 去掉语言标记（```python）
-                var code = parts[i].replace(/^[a-zA-Z0-9]*\n/, '');
+                // 语言标记（```python）。字符集要含 + # - . 否则 c++ / c# 认不出
+                var lm = /^([a-zA-Z0-9+#._-]*)\n/.exec(parts[i]);
+                var lang = lm ? lm[1] : '';
+                var code = parts[i].replace(/^[a-zA-Z0-9+#._-]*\n/, '');
                 // 含换行 = 块级 <pre>；不含 = 行内 <code>
                 var isBlock = code.indexOf('\n') >= 0;
-                holds.push(isBlock
-                    ? '<pre><code>' + esc(code) + '</code></pre>'
-                    : '<code>' + esc(code) + '</code>');
+                if (isBlock) {
+                    holds.push(
+                        '<div class="codeblk">' +
+                          '<div class="code-top">' +
+                            '<span class="lang">' + esc(lang || 'code') + '</span>' +
+                            '<button class="copy-btn" type="button">复制</button>' +
+                          '</div>' +
+                          '<pre><code>' + esc(code) + '</code></pre>' +
+                        '</div>');
+                } else {
+                    holds.push('<code>' + esc(code) + '</code>');
+                }
                 body += '\u0001H' + (holds.length - 1) + '\u0001';
             } else {
                 body += parts[i];
@@ -173,6 +236,67 @@
     }
 
     // ── 渲染 ───────────────────────────────────────────────
+    /**
+     * 复制文本
+     * navigator.clipboard 只在 HTTPS / localhost 下有 —— Pages 是 HTTPS，
+     * 但万一被人用 file:// 打开就退化到 execCommand，别直接失败。
+     */
+    function copyText(t) {
+        if (global.navigator && global.navigator.clipboard && global.isSecureContext) {
+            return global.navigator.clipboard.writeText(t);
+        }
+        return new Promise(function (res, rej) {
+            try {
+                var ta = doc.createElement('textarea');
+                ta.value = t;
+                ta.style.position = 'fixed';
+                ta.style.left = '-9999px';
+                doc.body.appendChild(ta);
+                ta.select();
+                var ok = doc.execCommand('copy');
+                doc.body.removeChild(ta);
+                ok ? res() : rej(new Error('copy failed'));
+            } catch (e) { rej(e); }
+        });
+    }
+
+    /**
+     * 事件委托：复制按钮 + 图片失败
+     * 用委托而不是逐个绑定，是因为流式输出会不断重建 innerHTML，
+     * 逐个绑的话每次重绘都要重绑一遍，还容易漏。
+     */
+    function bindBub() {
+        var box = $('msgs');
+
+        box.addEventListener('click', function (e) {
+            var btn = e.target.closest ? e.target.closest('.copy-btn') : null;
+            if (!btn) return;
+            var blk = btn.closest('.codeblk');
+            var pre = blk && blk.querySelector('pre');
+            if (!pre) return;
+            copyText(pre.textContent).then(function () {
+                btn.textContent = '已复制';
+                btn.classList.add('done');
+                global.setTimeout(function () {
+                    btn.textContent = '复制';
+                    btn.classList.remove('done');
+                }, 1400);
+            }).catch(function () {
+                btn.textContent = '失败';
+                global.setTimeout(function () { btn.textContent = '复制'; }, 1400);
+            });
+        });
+
+        // ★ 图片加载失败：error 不冒泡，必须用捕获阶段监听
+        box.addEventListener('error', function (e) {
+            var t = e.target;
+            if (t && t.tagName === 'IMG' && t.classList.contains('msg-img')) {
+                t.classList.add('img-err');
+                t.alt = t.alt || '图片加载失败';
+            }
+        }, true);
+    }
+
     function row(role, html, isErr) {
         var d = doc.createElement('div');
         d.className = 'row' + (role === 'user' ? ' me' : '');
@@ -291,16 +415,19 @@
                 signal: ctrl.signal,
                 onDelta: function (d) {
                     full += d;
-                    holder.innerHTML = md(full) + '<span class="cursor"></span>';
-                    bottom();
+                    // ★ 节流：AI 一次能吐几百个 delta，每个都全量重渲染
+                    //   + 重排 DOM，长回复会明显掉帧。60ms 一档，
+                    //   肉眼看不出延迟，但渲染次数能降一个数量级。
+                    schedRender(holder, full);
                 }
             });
-            holder.innerHTML = md(full);
+            holder.innerHTML = flushRender(holder, full);
             msgs.push({ role: 'assistant', text: full });
             save();
         } catch (e) {
             if (e && e.name === 'AbortError') {
-                holder.innerHTML = md(full) + '<div class="meta">已停止</div>';
+                holder.innerHTML = flushRender(holder, full) +
+                    '<div class="meta">已停止</div>';
                 if (full) msgs.push({ role: 'assistant', text: full });
             } else {
                 var msg = e.message || String(e);
@@ -322,6 +449,36 @@
 
     function stop() {
         if (ctrl) ctrl.abort();
+    }
+
+    // ── 流式渲染节流 ──────────────────────────────────────
+    var rTimer = null, rLast = 0;
+    var R_MS = 60;                 // 一档 60ms
+
+    function paint(holder, txt) {
+        holder.innerHTML = md(txt) + '<span class="cursor"></span>';
+        bottom();
+    }
+    function schedRender(holder, txt) {
+        var now = Date.now();
+        // 距上次够久 → 立刻画（避免小回复也要等一整档）
+        if (now - rLast >= R_MS) {
+            rLast = now;
+            paint(holder, txt);
+            return;
+        }
+        if (rTimer) return;        // 已有待画的了，别重复排队
+        rTimer = global.setTimeout(function () {
+            rTimer = null;
+            rLast = Date.now();
+            paint(holder, txt);
+        }, R_MS - (now - rLast));
+    }
+    /** 流结束时立刻收尾，不能让最后一截卡在节流里 */
+    function flushRender(holder, txt) {
+        if (rTimer) { global.clearTimeout(rTimer); rTimer = null; }
+        rLast = Date.now();
+        return md(txt);
     }
 
     // ── 面板 ───────────────────────────────────────────────
@@ -542,6 +699,7 @@
     function init() {
         load();
         bind();
+        bindBub();
         banner();
         chip();
         renderAll();
