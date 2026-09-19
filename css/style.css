@@ -81,6 +81,21 @@ body{
 .send.stop{background:#e64340}
 
 /* ── 面板 ───────────────────────────── */
+/*
+ * ★ hidden 属性必须显式兜住
+ *
+ * 坑：hidden 生效靠的是浏览器默认样式表里的 [hidden]{display:none}。
+ * 而**作者样式优先级高于浏览器默认样式** —— 下面 #sheet 的 display:flex
+ * 会直接盖掉它，导致 sheet.hidden = true 之后面板依然可见，
+ * 表现就是"点关闭没反应"。
+ *
+ * 下面这两条用 id+属性选择器（比单 id 更具体），把 display:none 抢回来。
+ * 凡是设了 display 又要用 hidden 的元素，都得在这儿登记。
+ */
+#sheet[hidden],
+#sheet-mask[hidden],
+#btn-stop[hidden]{display:none}
+
 #sheet-mask{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:40;
             animation:fade var(--dur) ease}
 @keyframes fade{from{opacity:0}to{opacity:1}}
