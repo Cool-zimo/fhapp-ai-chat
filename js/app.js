@@ -19,6 +19,291 @@
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
         });
     }
+    // ══════════════════════════════════════════════════════
+    //  LaTeX 数学公式
+    //
+    //  不引 KaTeX/MathJax：那俩要加载 CSS + 好几套字体，
+    //  网络一卡公式就变成一堆乱码或空白，比不渲染还难看。
+    //  自研一个够用的子集（分数/上下标/根号/希腊字母/常用运算符），
+    //  零外部依赖，永远不会"加载失败"。
+    //
+    //  ★ 处理不了的命令原样保留（\) → 至少不破坏阅读，
+    //    也不会把 rac 之类显示成一坨看不懂的源码。
+    // ══════════════════════════════════════════════════════
+
+    var TEX_SYM = {
+        // 希腊字母
+        'alpha': 'α', 'beta': 'β', 'gamma': 'γ', 'delta': 'δ',
+        'epsilon': 'ε', 'varepsilon': 'ε', 'zeta': 'ζ', 'eta': 'η',
+        'theta': 'θ', 'vartheta': 'θ', 'iota': 'ι', 'kappa': 'κ',
+        'lambda': 'λ', 'mu': 'μ', 'nu': 'ν', 'xi': 'ξ', 'pi': 'π',
+        'rho': 'ρ', 'sigma': 'σ', 'tau': 'τ', 'upsilon': 'υ',
+        'phi': 'φ', 'varphi': 'φ', 'chi': 'χ', 'psi': 'ψ', 'omega': 'ω',
+        'Gamma': 'Γ', 'Delta': 'Δ', 'Theta': 'Θ', 'Lambda': 'Λ',
+        'Xi': 'Ξ', 'Pi': 'Π', 'Sigma': 'Σ', 'Phi': 'Φ', 'Psi': 'Ψ',
+        'Omega': 'Ω',
+        // 运算符 / 关系
+        'times': '×', 'div': '÷', 'pm': '±', 'mp': '∓',
+        'cdot': '·', 'ast': '∗', 'circ': '∘', 'bullet': '•',
+        'le': '≤', 'leq': '≤', 'ge': '≥', 'geq': '≥',
+        'neq': '≠', 'ne': '≠', 'approx': '≈', 'equiv': '≡',
+        'sim': '∼', 'simeq': '≃', 'propto': '∝',
+        'll': '≪', 'gg': '≫', 'subset': '⊂', 'supset': '⊃',
+        'subseteq': '⊆', 'supseteq': '⊇', 'in': '∈',
+        'notin': '∉', 'cup': '∪', 'cap': '∩',
+        'infty': '∞', 'partial': '∂', 'nabla': '∇',
+        'forall': '∀', 'exists': '∃', 'neg': '¬',
+        'wedge': '∧', 'vee': '∨', 'oplus': '⊕', 'otimes': '⊗',
+        'to': '→', 'rightarrow': '→', 'Rightarrow': '⇒',
+        'leftarrow': '←', 'Leftarrow': '⇐',
+        'leftrightarrow': '↔', 'Leftrightarrow': '⇔',
+        'mapsto': '↦', 'uparrow': '↑', 'downarrow': '↓',
+        'sum': '∑', 'prod': '∏', 'int': '∫', 'iint': '∬',
+        'oint': '∮', 'lim': 'lim', 'log': 'log', 'ln': 'ln',
+        'sin': 'sin', 'cos': 'cos', 'tan': 'tan',
+        'cot': 'cot', 'sec': 'sec', 'csc': 'csc',
+        'arcsin': 'arcsin', 'arccos': 'arccos', 'arctan': 'arctan',
+        'max': 'max', 'min': 'min', 'sup': 'sup', 'inf': 'inf',
+        'deg': '°', 'prime': '′', 'angle': '∠',
+        'perp': '⊥', 'parallel': '∥', 'therefore': '∴',
+        'because': '∵', 'dots': '…', 'cdots': '⋯',
+        'ldots': '…', 'vdots': '⋮', 'ddots': '⋱',
+        'quad': ' ', 'qquad': ' ', 'hspace': '',
+        'left': '', 'right': '', 'big': '', 'Big': '',
+        'bigg': '', 'Bigg': '', 'displaystyle': '',
+        'limits': '', 'nolimits': '', 'bmod': 'mod'
+    };
+
+    /** 从 i 处的 '{' 找配对的 '}' */
+    function _matchBrace(s, i) {
+        if (s[i] !== '{') return -1;
+        var d = 0;
+        for (var j = i; j < s.length; j++) {
+            if (s[j] === '{') d++;
+            else if (s[j] === '}') {
+                d--;
+                if (d === 0) return j;
+            }
+        }
+        return -1;                       // 不闭合 → 放弃，原样显示
+    }
+
+    /** 取出 {...} 的内容（不含外层花括号） */
+    function _grp(s) {
+        if (s[0] !== '{') return null;
+        var e = _matchBrace(s, 0);
+        return e < 0 ? null : s.slice(1, e);
+    }
+
+    /**
+     * 把 LaTeX 转成 HTML
+     * 输入是**未转义**的原始 LaTeX；输出里所有文本都已 esc 过。
+     */
+    function tex(src) {
+        src = String(src == null ? '' : src);
+        if (!src.trim()) return '';
+
+        // 多行：\\ 或 \cr → 换行
+        var lines = src.split(/\\\\|\\cr/);
+
+        var out = lines.map(function (ln) {
+            return _texLine(ln);
+        }).join('<br>');
+
+        return out;
+    }
+
+    function _texLine(s) {
+        var out = '';
+        var i = 0;
+
+        while (i < s.length) {
+            var c = s[i];
+
+            // ── \命令 ────────────────────────────────────
+            if (c === '\\') {
+                // 取命令名（字母，或单个非字母字符）
+                var m = /^\\([a-zA-Z]+|.)/.exec(s.slice(i));
+                if (!m) { out += esc('\\'); i++; continue; }
+                var cmd = m[1];
+                var rest = s.slice(i + 1 + cmd.length);
+
+                // \text{...} / \mathrm{...} → 普通文字
+                if (cmd === 'text' || cmd === 'mathrm' || cmd === 'mathbf' ||
+                    cmd === 'textit' || cmd === 'textrm') {
+                    var g0 = _grp(rest);
+                    if (g0 !== null) {
+                        out += esc(g0);
+                        i += 1 + cmd.length + g0.length + 2;
+                        continue;
+                    }
+                }
+
+                // \frac{a}{b}
+                if (cmd === 'frac' || cmd === 'dfrac' || cmd === 'tfrac') {
+                    var ga = _grp(rest);
+                    if (ga !== null) {
+                        var after = rest.slice(ga.length + 2);
+                        var gb = _grp(after);
+                        if (gb !== null) {
+                            out += '<span class="mfrac">' +
+                                '<span class="mnum">' + _texLine(ga) + '</span>' +
+                                '<span class="mden">' + _texLine(gb) + '</span>' +
+                                '</span>';
+                            i += 1 + cmd.length + (ga.length + 2) + (gb.length + 2);
+                            continue;
+                        }
+                    }
+                }
+
+                // \sqrt[n]{x} → 只渲染成普通根号（n 次根号样式太复杂）
+                if (cmd === 'sqrt') {
+                    var g1 = _grp(rest);
+                    if (g1 !== null) {
+                        out += '<span class="msqrt">' +
+                            '<span class="mrad">√</span>' +
+                            '<span class="mbody">' + _texLine(g1) + '</span>' +
+                            '</span>';
+                        i += 1 + cmd.length + g1.length + 2;
+                        continue;
+                    }
+                    // \sqrt2 这种无花括号的
+                    var sm = /^([0-9a-zA-Z])/.exec(rest);
+                    if (sm) {
+                        out += '<span class="msqrt"><span class="mrad">√</span>' +
+                            '<span class="mbody">' + esc(sm[1]) + '</span></span>';
+                        i += 1 + cmd.length + 1;
+                        continue;
+                    }
+                }
+
+                // \overline{x} / \hat{x} / \vec{x}
+                if (cmd === 'overline' || cmd === 'bar') {
+                    var g2 = _grp(rest);
+                    if (g2 !== null) {
+                        out += '<span class="mover">' + _texLine(g2) + '</span>';
+                        i += 1 + cmd.length + g2.length + 2;
+                        continue;
+                    }
+                }
+                if (cmd === 'hat' || cmd === 'widehat' || cmd === 'vec' ||
+                    cmd === 'tilde' || cmd === 'dot') {
+                    var g3 = _grp(rest);
+                    if (g3 !== null) {
+                        out += '<span class="mhat">' + _texLine(g3) + '</span>';
+                        i += 1 + cmd.length + g3.length + 2;
+                        continue;
+                    }
+                }
+
+                // 符号表
+                if (TEX_SYM[cmd] !== undefined) {
+                    out += esc(TEX_SYM[cmd]);
+                    i += 1 + cmd.length;
+                    continue;
+                }
+
+                // 未知命令：原样保留（比显示乱码强）
+                out += esc('\\' + cmd);
+                i += 1 + cmd.length;
+                continue;
+            }
+
+            // ── ^ 上标 ────────────────────────────────────
+            if (c === '^') {
+                var supG = _grp(s.slice(i + 1));
+                if (supG !== null) {
+                    out += '<sup>' + _texLine(supG) + '</sup>';
+                    i += 2 + supG.length + 1;
+                    continue;
+                }
+                var sup1 = /^([0-9a-zA-Z])/.exec(s.slice(i + 1));
+                if (sup1) {
+                    out += '<sup>' + esc(sup1[1]) + '</sup>';
+                    i += 2;
+                    continue;
+                }
+                out += esc('^'); i++; continue;
+            }
+
+            // ── _ 下标 ────────────────────────────────────
+            if (c === '_') {
+                var subG = _grp(s.slice(i + 1));
+                if (subG !== null) {
+                    out += '<sub>' + _texLine(subG) + '</sub>';
+                    i += 2 + subG.length + 1;
+                    continue;
+                }
+                var sub1 = /^([0-9a-zA-Z])/.exec(s.slice(i + 1));
+                if (sub1) {
+                    out += '<sub>' + esc(sub1[1]) + '</sub>';
+                    i += 2;
+                    continue;
+                }
+                out += esc('_'); i++; continue;
+            }
+
+            // ── 普通字符 ──────────────────────────────────
+            // 花括号只是分组，不显示
+            if (c === '{' || c === '}') { i++; continue; }
+            out += esc(c);
+            i++;
+        }
+        return out;
+    }
+
+    /**
+     * 抽出 $...$ / $$...$$ → 占位符
+     *
+     * ★ 必须在 esc **之前**抽：
+     *   LaTeX 里满是 \ { } ^ _ ，一旦先 esc，
+     *   & < > 变成实体后再匹配就全乱了。
+     *   这里拿到的必须是原始源码。
+     */
+    function extractMath(text, holds) {
+        var out = '';
+        var i = 0;
+
+        while (i < text.length) {
+            // $$ ... $$  块级
+            if (text[i] === '$' && text[i + 1] === '$') {
+                var e2 = text.indexOf('$$', i + 2);
+                if (e2 > i + 1) {
+                    var body = text.slice(i + 2, e2);
+                    if (body.trim()) {
+                        holds.push('<span class="math math-block">' +
+                            tex(body) + '</span>');
+                        out += '\u0001H' + (holds.length - 1) + '\u0001';
+                        i = e2 + 2;
+                        continue;
+                    }
+                }
+                // 没闭合：原样吐出，别吞掉后面的正文
+                out += text[i]; i++; continue;
+            }
+
+            // $ ... $  行内
+            if (text[i] === '$') {
+                var e1 = text.indexOf('$', i + 1);
+                // 行内公式不能跨行，且不能是空的
+                if (e1 > i + 1 && text.slice(i + 1, e1).indexOf('\n') < 0) {
+                    var b1 = text.slice(i + 1, e1);
+                    if (b1.trim()) {
+                        holds.push('<span class="math math-inline">' +
+                            tex(b1) + '</span>');
+                        out += '\u0001H' + (holds.length - 1) + '\u0001';
+                        i = e1 + 1;
+                        continue;
+                    }
+                }
+                out += text[i]; i++; continue;
+            }
+
+            out += text[i]; i++;
+        }
+        return out;
+    }
+
     /**
      * Markdown 渲染
      *
@@ -42,6 +327,9 @@
         var holds = [];   // 存抽出来的 HTML 片段（代码块 / 行内 code）
 
         function inline(x) {
+            // ⓪ 数学公式（最先 —— \ { } ^ _ 不能被后面的规则碰）
+            x = extractMath(x, holds);
+
             // ① 行内 code（最优先，内容原样，不接受任何后续规则）
             x = x.replace(/`([^`\n]+)`/g, function (m, c) {
                 holds.push('<code>' + c + '</code>');
@@ -219,7 +507,9 @@
                 }
                 body += '\u0001H' + (holds.length - 1) + '\u0001';
             } else {
-                body += parts[i];
+                // ★ 公式必须在代码块之外、esc 之前抽
+                //   代码里的 $ 是 shell 变量，不能被当公式
+                body += extractMath(parts[i], holds);
             }
         }
 
