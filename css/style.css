@@ -172,3 +172,44 @@ body{
 .row.me .bub pre{background:rgba(255,255,255,.55)}
 .row.me .bub code{background:rgba(0,0,0,.08)}
 .row.me .bub blockquote{background:rgba(0,0,0,.04);border-left-color:rgba(0,0,0,.2)}
+
+/* ═══ Markdown 进阶元素 ═══════════════════════════════════ */
+.bub mark{background:#fff3a3;color:inherit;border-radius:2px;padding:0 2px}
+
+/* 图片：AI 经常返回图，不显示就太浪费了 */
+.bub img.msg-img{
+    display:block;max-width:100%;max-height:320px;border-radius:6px;
+    margin:6px 0;background:#f0f0f0;cursor:zoom-in;
+    animation:imgIn .2s var(--ease)}
+@keyframes imgIn{from{opacity:0}to{opacity:1}}
+.bub img.msg-img.img-err{
+    min-width:120px;min-height:60px;border:1px dashed #ccc;
+    background:#fafafa;cursor:default}
+.bub img.msg-img.img-err::after{content:'图片加载失败'}
+
+/* 任务列表：AI 给的清单，只读 */
+.bub ul.task{list-style:none;padding-left:2px;margin:5px 0 7px}
+.bub li.task-item{display:flex;align-items:flex-start;gap:6px;margin:3px 0}
+.bub li.task-item input{margin:3px 0 0;flex:0 0 auto;accent-color:var(--brand)}
+.bub li.task-item.done{color:#999;text-decoration:line-through}
+
+/* 代码块外壳：语言标签 + 复制 */
+.codeblk{
+    margin:7px 0;border-radius:6px;overflow:hidden;
+    border:1px solid rgba(0,0,0,.09);background:#f6f6f6}
+.code-top{
+    display:flex;align-items:center;gap:8px;padding:4px 9px;
+    background:#ececec;border-bottom:1px solid rgba(0,0,0,.07)}
+.code-top .lang{
+    flex:1;font-size:11px;color:#888;font-family:ui-monospace,Menlo,Consolas,monospace;
+    text-transform:lowercase}
+.copy-btn{
+    border:0;background:#fff;border:1px solid rgba(0,0,0,.12);
+    border-radius:4px;font-size:11px;padding:2px 8px;color:#555;
+    transition:all var(--dur) ease}
+.copy-btn:hover{color:var(--brand);border-color:var(--brand)}
+.copy-btn.done{color:var(--brand);border-color:var(--brand);background:#f2fbf5}
+.codeblk pre{margin:0;border:0;border-radius:0;background:#f6f6f6}
+
+/* 长链接换行，别把气泡撑破 */
+.bub a{word-break:break-all}
