@@ -385,6 +385,12 @@
             } catch (e) { /* 独立打开就忽略 */ }
         };
 
+        // Esc 关面板。之前只能点 ✕，而那个按钮一度被 CSS 坑到失效，
+        // 多一条退路能少卡住一次。
+        doc.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && !$('sheet').hidden) closeSheet();
+        });
+
         var inp = $('inp');
         inp.addEventListener('input', function () { autoH(inp); });
         inp.addEventListener('keydown', function (e) {
