@@ -269,17 +269,15 @@
      * ★ 只吃"最小单元"：向左吃到 base 边界，向右吃完上标就停。
      *   绝不继续往右吃 —— 否则会把后面的整句中文都吞进公式里。
      */
-    function _inlineMath(t, holds) {
+        function _inlineMath(t, holds) {
         t = String(t == null ? '' : t);
+
         if (!/[\^_]/.test(t)) {
-            // 没有上下标，但可能有明确的 LaTeX 命令（\frac 之类）
-            if (/\\[a-zA-Z]{2,}/.test(t) && !/https?:\/\//i.test(t)) {
-                if (_looksMath(t)) {
-                    holds.push('<span class="math math-inline">' + tex(t.trim()) + '</span>');
-                    return '\u0001H' + (holds.length - 1) + '\u0001';
-                }
+            // 没有上下标，但可能有明确 LaTeX 命令（\frac 之类）
+            if (/\\[a-zA-Z]{2,}/.test(t) && !/https?:\/\//i.test(t) && _looksMath(t)) {
+                holds.push('<span class="math math-inline">' + tex(t.trim()) + '</span>');
+                return '\u0001H' + (holds.length - 1) + '\u0001';
             }
-            // ★ 也必须 esc —— 这条分支覆盖绝大多数普通文本
             return esc(t);
         }
         // URL 里可能有 _ 或 %5E，整行放过
@@ -288,40 +286,53 @@
         if (/^[\w./-]+\.[a-zA-Z0-9]{1,6}$/.test(t.trim())) return esc(t);
 
         var out = '';
+        var start = 0;          // ★ 未处理文本的起点
         var i = 0;
+
         while (i < t.length) {
-            var c = t[i];
-
-            if ((c === '^' || c === '_') && i > 0) {
-                // 向左扩展 base（数字/字母/右括号）
+            if ((t[i] === '^' || t[i] === '_') && i > 0) {
+                // ‑‑ 向左扩展 base ‑‑
+                // ★ 必须支持配对括号：只认字母数字的话，
+                //   (5-2)^2 会停在 '-' 上，base 变成 "2)" 而不是 "(5-2)"
                 var L = i;
-                while (L > 0 && /[0-9A-Za-z)\]}]/.test(t[L - 1])) L--;
-                if (L === i) { out += esc(t[i]); i++; continue; }  // 左边没东西，不是公式
+                while (L > start) {
+                    var pc = t[L - 1];
+                    if (/[0-9A-Za-z\]}]/.test(pc)) { L--; continue; }
+                    if (pc === ')') {
+                        var d = 0, j = L - 1;
+                        for (; j >= start; j--) {
+                            if (t[j] === ')') d++;
+                            else if (t[j] === '(') { d--; if (d === 0) break; }
+                        }
+                        if (j >= start && d === 0) { L = j; continue; }
+                    }
+                    break;
+                }
 
-                // 向右扩展 sup
+                // ‑‑ 向右扩展 sup/sub ‑‑
                 var R = i + 1;
                 if (t[R] === '{') {
                     var e = _matchBrace(t, R);
                     if (e >= 0) R = e + 1;
-                    else R = i + 1;
                 } else {
                     while (R < t.length && /[0-9A-Za-z]/.test(t[R])) R++;
                 }
-                if (R === i + 1) { out += esc(t[i]); i++; continue; } // 右边没东西
 
-                var piece = t.slice(L, R);
-                holds.push('<span class="math math-inline">' + tex(piece) + '</span>');
-                out += '\u0001H' + (holds.length - 1) + '\u0001';
-                i = R;
-                continue;
+                if (L >= start && R > i + 1) {
+                    // ★ 先把 L 之前的普通文本吐出去，再吐公式
+                    //   少了这一步，(5-2)^2 会渲染成 (5-2)  +  (5-2)² —— 重复
+                    out += esc(t.slice(start, L));
+                    holds.push('<span class="math math-inline">' +
+                        tex(t.slice(L, R)) + '</span>');
+                    out += '\u0001H' + (holds.length - 1) + '\u0001';
+                    start = R;
+                    i = R;
+                    continue;
+                }
             }
-
-            // ★ 必须在这里 esc：buf 里其它行是 esc 过的，
-            //   而 flushP 不会再 esc（否则我们自己造的 <span> 会被转义）。
-            //   不 esc 就等于把原文直接吐进 innerHTML —— 这是 XSS。
-            out += esc(t[i]);
             i++;
         }
+        out += esc(t.slice(start));
         return out;
     }
 
