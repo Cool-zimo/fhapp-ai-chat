@@ -445,6 +445,216 @@
         return out;
     }
 
+    // ══════════════════════════════════════════════════════
+    //  代码语法高亮（零依赖）
+    //
+    //  不引 highlight.js / Prism：那俩体积大且要额外加载 CSS，
+    //  跟"零外部资源"的原则冲突。自研一个够用的子集。
+    //
+    //  ★ 安全：所有输出都过 escCode()，只转义 & < >。
+    //    代码块内容放在**标签体内**而不是属性里，所以不用转义引号 ——
+    //    这样字符串引号保持原样，高亮器才能识别它们。
+    // ══════════════════════════════════════════════════════
+
+    /** 只转义 & < >（内容在标签体内，不在属性里）*/
+    function escCode(s) {
+        return String(s).replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;');
+    }
+
+    // ── 关键字表（按语言家族复用，省体积）──────────────────
+    var KW_C = ('const let var function return if else for while do break continue ' +
+        'new delete typeof instanceof class extends super this switch case default ' +
+        'try catch finally throw async await yield import export from as in of void ' +
+        'static get set null undefined true false interface type enum implements ' +
+        'public private protected abstract readonly namespace declare').split(' ');
+
+    var KW_TYP = ('int char float double long short unsigned signed struct union ' +
+        'enum typedef sizeof static const void bool boolean byte final native ' +
+        'package synchronized transient volatile strictfp').split(' ');
+
+    var KW_PY = ('def class return if elif else for while break continue pass ' +
+        'import from as with try except finally raise lambda global nonlocal ' +
+        'assert del yield async await None True False and or not is in print ' +
+        'self super').split(' ');
+
+    var KW_SH = ('if then else elif fi for while do done case esac function ' +
+        'return in until select echo export local readonly set unset shift ' +
+        'exit trap source alias cd test true false').split(' ');
+
+    var KW_SQL = ('select from where insert into values update set delete create ' +
+        'table drop alter add primary key foreign references join left right inner ' +
+        'outer on group by order having limit offset distinct as and or not null ' +
+        'is between like in exists union all view index database').split(' ');
+
+    var KW_GO = ('func package import var const type struct interface map chan go ' +
+        'defer select switch case default if else for range return break continue ' +
+        'nil true false string int bool error make new len cap append').split(' ');
+
+    var KW_RS = ('fn let mut const static struct enum impl trait use mod pub self ' +
+        'super as where match if else loop while for in return break continue ' +
+        'true false Some None Ok Err move ref dyn crate').split(' ');
+
+    // 语言 → 规则
+    //  kw: 关键字   com: [起,止] 注释对（止为 \n = 行注释）
+    //  str: 字符串引号   tri: 支持三引号   html/css: 特殊模式
+    var HL_SPEC = {
+        c:    { kw: KW_C.concat(KW_TYP), com: [['//', '\n'], ['/*', '*/']], str: ['"', "'"] },
+        js:   { kw: KW_C, com: [['//', '\n'], ['/*', '*/']], str: ['"', "'", '`'] },
+        json: { kw: ['true', 'false', 'null'], com: [], str: ['"'] },
+        py:   { kw: KW_PY, com: [['#', '\n']], str: ['"', "'"], tri: true },
+        sh:   { kw: KW_SH, com: [['#', '\n']], str: ['"', "'"] },
+        sql:  { kw: KW_SQL, com: [['--', '\n'], ['/*', '*/']], str: ["'", '"'] },
+        go:   { kw: KW_GO, com: [['//', '\n'], ['/*', '*/']], str: ['"', "'", '`'] },
+        rs:   { kw: KW_RS, com: [['//', '\n'], ['/*', '*/']], str: ['"', "'"] },
+        css:  { kw: ['@media', '@import', '@keyframes', '@font-face', '@supports'],
+                com: [['/*', '*/']], str: ['"', "'"], css: true },
+        yaml: { kw: ['true', 'false', 'null', 'yes', 'no'], com: [['#', '\n']], str: ['"', "'"] },
+        html: { kw: [], com: [['<!--', '-->']], str: ['"', "'"], html: true },
+        xml:  { kw: [], com: [['<!--', '-->']], str: ['"', "'"], html: true }
+    };
+
+    // 语言别名
+    var HL_ALIAS = {
+        javascript: 'js', typescript: 'js', jsx: 'js', tsx: 'js', ts: 'js',
+        mjs: 'js', cjs: 'js', vue: 'html',
+        python: 'py', py3: 'py', python3: 'py',
+        bash: 'sh', shell: 'sh', zsh: 'sh', console: 'sh', terminal: 'sh',
+        'c++': 'c', cpp: 'c', 'c#': 'c', csharp: 'c', java: 'c',
+        kotlin: 'c', swift: 'c', php: 'c', scala: 'c', dart: 'c',
+        golang: 'go', rust: 'rs', scss: 'css', less: 'css',
+        yml: 'yaml', htm: 'html', markup: 'html', svg: 'xml',
+        mysql: 'sql', psql: 'sql', sqlite: 'sql'
+    };
+
+    /** 关键字集合（数组 → 对象，查找 O(1)）*/
+    var _KWSET = {};
+    (function () {
+        Object.keys(HL_SPEC).forEach(function (k) {
+            var set = {};
+            HL_SPEC[k].kw.forEach(function (w) { set[w] = 1; });
+            _KWSET[k] = set;
+        });
+    })();
+
+    // 三引号常量：避免源码里出现连续三个引号（字符串定界冲突）
+    var TRIP_SQ = "''" + "'";
+    var TRIP_DQ = '""' + '"';
+
+    var _hlCache = {};
+    var _hlKeys = [];
+
+    /** 结果缓存：流式输出时代码块被反复重渲染，不缓存会卡 */
+    function hl(code, lang) {
+        code = String(code == null ? '' : code);
+
+        var L = String(lang || '').toLowerCase();
+        var name = HL_SPEC[L] ? L : (HL_ALIAS[L] || 'c');
+        var S = HL_SPEC[name] || HL_SPEC.c;
+        var kws = _KWSET[name] || {};
+
+        var ck = name + '\u0000' + code;
+        if (_hlCache[ck] !== undefined) return _hlCache[ck];
+
+        var out = '';
+        var i = 0, n = code.length;
+
+        while (i < n) {
+            var ch = code[i];
+
+            // ① 注释（最优先，里面的东西都不该被高亮）
+            var coms = S.com || [];
+            var moved = false;
+            for (var ci = 0; ci < coms.length; ci++) {
+                var a = coms[ci][0], b = coms[ci][1];
+                if (code.substr(i, a.length) !== a) continue;
+                var e;
+                if (b === '\n') { e = code.indexOf('\n', i); if (e < 0) e = n; }
+                else { e = code.indexOf(b, i + a.length); e = e < 0 ? n : e + b.length; }
+                out += '<span class="hl-com">' + escCode(code.slice(i, e)) + '</span>';
+                i = e; moved = true; break;
+            }
+            if (moved) continue;
+
+            // ② 字符串
+            if (S.str && S.str.indexOf(ch) >= 0) {
+                var trip = code.substr(i, 3);
+                if (S.tri && (trip === TRIP_SQ || trip === TRIP_DQ)) {
+                    var te = code.indexOf(trip, i + 3);
+                    te = te < 0 ? n : te + 3;
+                    out += '<span class="hl-str">' + escCode(code.slice(i, te)) + '</span>';
+                    i = te; continue;
+                }
+                var j = i + 1;
+                while (j < n) {
+                    if (code[j] === '\\') { j += 2; continue; }
+                    if (code[j] === ch) { j++; break; }
+                    if (code[j] === '\n') break;      // 不跨行
+                    j++;
+                }
+                out += '<span class="hl-str">' + escCode(code.slice(i, j)) + '</span>';
+                i = j; continue;
+            }
+
+            // ③ HTML 标签名
+            if (S.html && ch === '<' && /[a-zA-Z!/]/.test(code[i + 1] || '')) {
+                var m = /^<\/?([a-zA-Z][\w-]*)/.exec(code.slice(i));
+                if (m) {
+                    out += '&lt;' + (code[i + 1] === '/' ? '/' : '') +
+                        '<span class="hl-tag">' + escCode(m[1]) + '</span>';
+                    i += m[0].length;
+                    continue;
+                }
+            }
+
+            // ④ 数字
+            if (/[0-9]/.test(ch) && !/[\w$]/.test(code[i - 1] || '')) {
+                var nm = /^(0[xX][0-9a-fA-F]+|\d+(\.\d+)?([eE][+-]?\d+)?)/.exec(code.slice(i));
+                if (nm) {
+                    out += '<span class="hl-num">' + escCode(nm[1]) + '</span>';
+                    i += nm[1].length;
+                    continue;
+                }
+            }
+
+            // ⑤ 标识符：关键字 / 函数 / 常量 / 普通
+            if (/[A-Za-z_$@]/.test(ch)) {
+                // ★ 必须有捕获组：写成 /^[A-Za-z_$@][\w$]*/ 的话 idm[1] 是
+                //   undefined，后面 w.length 直接抛错 —— 整个代码块渲染崩掉
+                var idm = /^([A-Za-z_$@][\w$]*)/.exec(code.slice(i));
+                if (idm) {
+                    var w = idm[1];
+                    if (kws[w]) {
+                        out += '<span class="hl-kw">' + escCode(w) + '</span>';
+                    } else if (code[i + w.length] === '(') {
+                        out += '<span class="hl-fn">' + escCode(w) + '</span>';
+                    } else if (/^[A-Z][A-Z0-9_]+$/.test(w)) {
+                        out += '<span class="hl-const">' + escCode(w) + '</span>';
+                    } else {
+                        out += escCode(w);
+                    }
+                    i += w.length;
+                    continue;
+                }
+            }
+
+            // ⑥ 运算符
+            if ('+-*/%=<>!&|^~?:'.indexOf(ch) >= 0) {
+                out += '<span class="hl-op">' + escCode(ch) + '</span>';
+                i++; continue;
+            }
+
+            out += escCode(ch);
+            i++;
+        }
+
+        _hlCache[ck] = out;
+        _hlKeys.push(ck);
+        if (_hlKeys.length > 60) delete _hlCache[_hlKeys.shift()];
+        return out;
+    }
+
     /**
      * Markdown 渲染
      *
@@ -646,7 +856,7 @@
                             '<span class="lang">' + esc(lang || 'code') + '</span>' +
                             '<button class="copy-btn" type="button">复制</button>' +
                           '</div>' +
-                          '<pre><code>' + esc(code) + '</code></pre>' +
+                          '<pre><code class="hl">' + hl(code, lang) + '</code></pre>' +
                         '</div>');
                 } else {
                     holds.push('<code>' + esc(code) + '</code>');
