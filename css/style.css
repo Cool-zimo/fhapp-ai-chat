@@ -248,3 +248,13 @@ body{
 
 /* 兜底：不支持的命令原样显示，用等宽标出来，别混进正文 */
 .bub .math{font-style:normal}
+
+/* ═══ 语法高亮（浅色主题，贴近微信代码块的观感） ═══════════ */
+.bub .hl-kw   , .tm-body .hl-kw   { color:#c2185b; font-weight:600 }
+.bub .hl-str  , .tm-body .hl-str  { color:#1a7f37 }
+.bub .hl-num  , .tm-body .hl-num  { color:#b8860b }
+.bub .hl-com  , .tm-body .hl-com  { color:#8a8a8a; font-style:italic }
+.bub .hl-fn   , .tm-body .hl-fn   { color:#1565c0 }
+.bub .hl-const, .tm-body .hl-const{ color:#6a1b9a }
+.bub .hl-tag  , .tm-body .hl-tag  { color:#c2185b }
+.bub .hl-op   , .tm-body .hl-op   { color:#666 }
